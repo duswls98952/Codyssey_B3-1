@@ -1,0 +1,274 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadLabResourcesInSeoul",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeVpcs",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeInternetGateways",
+        "ec2:DescribeRouteTables",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeSecurityGroupRules",
+        "ec2:DescribeNetworkAcls",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceStatus",
+        "ec2:DescribeImages",
+        "ec2:DescribeInstanceTypes",
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeKeyPairs",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeTags",
+        "ec2:DescribeAddresses",
+        "ec2:DescribeAccountAttributes",
+        "ec2:DescribeDhcpOptions",
+        "ec2:DescribeVpcBlockPublicAccessOptions",
+        "ec2:DescribeVpcBlockPublicAccessExclusions"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-northeast-2"
+        }
+      }
+    },
+    {
+      "Sid": "UseCloudShellForCli",
+      "Effect": "Allow",
+      "Action": [
+        "cloudshell:CreateEnvironment",
+        "cloudshell:CreateSession",
+        "cloudshell:GetEnvironmentStatus",
+        "cloudshell:StartEnvironment",
+        "cloudshell:PutCredentials"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CreateTaggedVpc",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateVpc"
+      ],
+      "Resource": "arn:aws:ec2:ap-northeast-2:503440159666:vpc/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Project": "Codyssey-B3-1",
+          "aws:RequestTag/Owner": "Yeonjin_IAM"
+        }
+      }
+    },
+    {
+      "Sid": "CreateTaggedLabResources",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateSubnet",
+        "ec2:CreateRouteTable",
+        "ec2:CreateInternetGateway",
+        "ec2:CreateSecurityGroup",
+        "ec2:CreateKeyPair"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-northeast-2:503440159666:subnet/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:route-table/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:internet-gateway/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:security-group/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:key-pair/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Project": "Codyssey-B3-1",
+          "aws:RequestTag/Owner": "Yeonjin_IAM"
+        }
+      }
+    },
+    {
+      "Sid": "UseOwnedVpcForCreation",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateSubnet",
+        "ec2:CreateRouteTable",
+        "ec2:CreateSecurityGroup"
+      ],
+      "Resource": "arn:aws:ec2:ap-northeast-2:503440159666:vpc/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "Codyssey-B3-1",
+          "aws:ResourceTag/Owner": "Yeonjin_IAM"
+        }
+      }
+    },
+    {
+      "Sid": "LaunchFromAmazonImages",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances"
+      ],
+      "Resource": "arn:aws:ec2:ap-northeast-2::image/ami-*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:Owner": "amazon",
+          "ec2:RootDeviceType": "ebs"
+        }
+      }
+    },
+    {
+      "Sid": "LaunchWithOwnedResources",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-northeast-2:503440159666:subnet/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:security-group/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:key-pair/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "Codyssey-B3-1",
+          "aws:ResourceTag/Owner": "Yeonjin_IAM"
+        }
+      }
+    },
+    {
+      "Sid": "LaunchTaggedMicroInstances",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances"
+      ],
+      "Resource": "arn:aws:ec2:ap-northeast-2:503440159666:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Project": "Codyssey-B3-1",
+          "aws:RequestTag/Owner": "Yeonjin_IAM",
+          "ec2:InstanceType": "t3.micro",
+          "ec2:Tenancy": "default"
+        }
+      }
+    },
+    {
+      "Sid": "LaunchTaggedSmallVolumes",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances"
+      ],
+      "Resource": "arn:aws:ec2:ap-northeast-2:503440159666:volume/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Project": "Codyssey-B3-1",
+          "aws:RequestTag/Owner": "Yeonjin_IAM",
+          "ec2:VolumeType": "gp3"
+        },
+        "NumericGreaterThanEquals": {
+          "ec2:VolumeSize": "8"
+        },
+        "NumericLessThanEquals": {
+          "ec2:VolumeSize": "10"
+        },
+        "NumericLessThanEqualsIfExists": {
+          "ec2:VolumeIops": "3000",
+          "ec2:VolumeThroughput": "125"
+        }
+      }
+    },
+    {
+      "Sid": "LaunchTaggedNetworkInterfaces",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances"
+      ],
+      "Resource": "arn:aws:ec2:ap-northeast-2:503440159666:network-interface/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Project": "Codyssey-B3-1",
+          "aws:RequestTag/Owner": "Yeonjin_IAM"
+        }
+      }
+    },
+    {
+      "Sid": "TagOnlyDuringCreation",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateTags"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-northeast-2:503440159666:vpc/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:subnet/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:route-table/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:internet-gateway/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:security-group/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:key-pair/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:instance/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:volume/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:network-interface/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Project": "Codyssey-B3-1",
+          "aws:RequestTag/Owner": "Yeonjin_IAM",
+          "ec2:CreateAction": [
+            "CreateVpc",
+            "CreateSubnet",
+            "CreateRouteTable",
+            "CreateInternetGateway",
+            "CreateSecurityGroup",
+            "CreateKeyPair",
+            "RunInstances"
+          ]
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "Name",
+            "Project",
+            "Owner"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ManageAndCleanUpOwnedLabResources",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeVpcAttribute",
+        "ec2:DescribeInstanceAttribute",
+        "ec2:DeleteVpc",
+        "ec2:DeleteSubnet",
+        "ec2:DeleteRouteTable",
+        "ec2:CreateRoute",
+        "ec2:DeleteRoute",
+        "ec2:AssociateRouteTable",
+        "ec2:DisassociateRouteTable",
+        "ec2:AttachInternetGateway",
+        "ec2:DetachInternetGateway",
+        "ec2:DeleteInternetGateway",
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:DeleteSecurityGroup",
+        "ec2:DeleteKeyPair",
+        "ec2:StartInstances",
+        "ec2:StopInstances",
+        "ec2:RebootInstances",
+        "ec2:TerminateInstances",
+        "ec2:DeleteVolume"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-northeast-2:503440159666:vpc/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:subnet/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:route-table/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:internet-gateway/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:security-group/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:key-pair/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:instance/*",
+        "arn:aws:ec2:ap-northeast-2:503440159666:volume/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "Codyssey-B3-1",
+          "aws:ResourceTag/Owner": "Yeonjin_IAM"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,337 @@
+# B3-1 실습 기록 (IP 가림 사본)
+# 날짜: 2026-11-10 · 로컬 Mac(AWS CLI 2.38.5, 프로필 b3-1, 리전 ap-northeast-2) / EC2(ec2-user@ip-10-0-1-14)
+# "$ "로 시작하는 줄은 로컬 Mac 명령, "[ec2-user@ip-10-0-1-14 ~]$ "로 시작하는 줄은 EC2 안 명령이다.
+# "# (보고)"는 출력 원문 대신 학습자가 결과를 알려 준 줄이고, "# 캡처:"는 같은 결과의 스크린샷 파일이다.
+# 표(--output table) 출력은 테두리 줄을 생략하고 값이 있는 행만 옮겼다. 원본 화면은 캡처 파일에 있다.
+# VPC(vpc-0d4141c709a455f42, 10.0.0.0/16)는 이전 세션에 만들었다.
+
+## 0. 로그인과 실행 주체 확인
+$ aws login --profile b3-1
+# (보고) 브라우저에서 IAM 사용자 Yeonjin_IAM으로 로그인
+$ aws sts get-caller-identity --profile b3-1 --output table
+|  Account      |  Arn                                          |  UserId                 |
+|  503440159666 |  arn:aws:iam::503440159666:user/Yeonjin_IAM   |  AIDAXKN27GOZKMFPDW5XM  |
+# 캡처: docs/screenshots/iam-identity.png
+
+## 1. 기존 상태 조회와 Public Subnet 생성
+$ aws ec2 describe-vpcs --profile b3-1 \
+    --vpc-ids vpc-0d4141c709a455f42 \
+    --query 'Vpcs[].[VpcId,CidrBlock,State,Tags[?Key==`Name`]|[0].Value]' \
+    --output table
+# (보고) vpc-0d4141c709a455f42 | 10.0.0.0/16 | available | b3-1-vpc
+$ aws ec2 describe-subnets --profile b3-1 \
+    --filters Name=vpc-id,Values=vpc-0d4141c709a455f42 \
+    --query 'Subnets[].[SubnetId,CidrBlock,AvailabilityZone,State,Tags[?Key==`Name`]|[0].Value]' \
+    --output table
+# (보고) 출력 없음 → 이 VPC에 Subnet이 아직 없음
+$ aws ec2 create-subnet \
+    --profile b3-1 \
+    --vpc-id vpc-0d4141c709a455f42 \
+    --cidr-block 10.0.1.0/24 \
+    --availability-zone ap-northeast-2a \
+    --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=b3-1-public-subnet},{Key=Project,Value=Codyssey-B3-1},{Key=Owner,Value=Yeonjin_IAM}]' \
+    --query 'Subnet.[SubnetId,CidrBlock,AvailabilityZone,State]' \
+    --output table
+|        CreateSubnet        |
+|  subnet-076006b93227230ea  |
+|  10.0.1.0/24               |
+|  ap-northeast-2a           |
+|  available                 |
+
+## 2. Internet Gateway 생성과 VPC 연결
+$ aws ec2 create-internet-gateway \
+    --profile b3-1 \
+    --tag-specifications 'ResourceType=internet-gateway,Tags=[{Key=Name,Value=b3-1-igw},{Key=Project,Value=Codyssey-B3-1},{Key=Owner,Value=Yeonjin_IAM}]' \
+    --query 'InternetGateway.[InternetGatewayId,Attachments]' \
+    --output table
+aws: [ERROR]: Row should have 1 elements, instead it has 0
+# 재실행하지 않고 조회로 실제 상태 확인 (트러블슈팅 사례 1)
+$ aws ec2 describe-internet-gateways --profile b3-1 \
+    --filters Name=tag:Name,Values=b3-1-igw \
+    --query 'InternetGateways[].{ID:InternetGatewayId,Attached:length(Attachments)}' \
+    --output table
+| Attached |          ID            |
+|  0       |  igw-011ba32fd601177ce |
+# 캡처: docs/screenshots/troubleshooting-igw-table-error.png
+$ aws ec2 attach-internet-gateway \
+    --profile b3-1 \
+    --internet-gateway-id igw-011ba32fd601177ce \
+    --vpc-id vpc-0d4141c709a455f42
+$ aws ec2 describe-internet-gateways --profile b3-1 \
+    --internet-gateway-ids igw-011ba32fd601177ce \
+    --query 'InternetGateways[].Attachments[].[VpcId,State]' \
+    --output table
+# (보고) vpc-0d4141c709a455f42 | available
+
+## 3. Route Table 생성, 기본 경로 추가, Subnet 연결
+$ aws ec2 create-route-table \
+    --profile b3-1 \
+    --vpc-id vpc-0d4141c709a455f42 \
+    --tag-specifications 'ResourceType=route-table,Tags=[{Key=Name,Value=b3-1-public-rt},{Key=Project,Value=Codyssey-B3-1},{Key=Owner,Value=Yeonjin_IAM}]' \
+    --query 'RouteTable.RouteTableId' \
+    --output text
+rtb-02b21534c3d314f1e
+$ aws ec2 create-route \
+    --profile b3-1 \
+    --route-table-id rtb-02b21534c3d314f1e \
+    --destination-cidr-block 0.0.0.0/0 \
+    --gateway-id igw-011ba32fd601177ce
+{
+    "Return": true
+}
+$ aws ec2 associate-route-table \
+    --profile b3-1 \
+    --route-table-id rtb-02b21534c3d314f1e \
+    --subnet-id subnet-076006b93227230ea
+{
+    "AssociationId": "rtbassoc-0fa8d7b66366482b8",
+    "AssociationState": {
+        "State": "associated"
+    }
+}
+
+## 4. Security Group 생성과 인바운드 규칙
+$ curl -s https://checkip.amazonaws.com
+x.x.x.x
+$ aws ec2 create-security-group \
+    --profile b3-1 \
+    --group-name b3-1-web-sg \
+    --description "B3-1 web server: HTTP from anywhere, SSH from my IP" \
+    --vpc-id vpc-0d4141c709a455f42 \
+    --tag-specifications 'ResourceType=security-group,Tags=[{Key=Name,Value=b3-1-web-sg},{Key=Project,Value=Codyssey-B3-1},{Key=Owner,Value=Yeonjin_IAM}]' \
+    --query 'GroupId' \
+    --output text
+sg-0e82ab4bd568d58f1
+$ aws ec2 authorize-security-group-ingress \
+    --profile b3-1 \
+    --group-id sg-0e82ab4bd568d58f1 \
+    --ip-permissions 'IpProtocol=tcp,FromPort=80,ToPort=80,IpRanges=[{CidrIp=0.0.0.0/0,Description="HTTP from anywhere"}]' \
+    --query 'SecurityGroupRules[].[IsEgress,IpProtocol,FromPort,ToPort,CidrIpv4]' \
+    --output table
+|  False|  tcp |  80 |  80 |  0.0.0.0/0   |
+$ aws ec2 authorize-security-group-ingress \
+    --profile b3-1 \
+    --group-id sg-0e82ab4bd568d58f1 \
+    --ip-permissions 'IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=x.x.x.x/32,Description="SSH from my IP only"}]' \
+    --query 'SecurityGroupRules[].[IsEgress,IpProtocol,FromPort,ToPort,CidrIpv4]' \
+    --output table
+|  False|  tcp |  22 |  22 |  x.x.x.x/32   |
+$ aws ec2 describe-security-group-rules \
+    --profile b3-1 \
+    --filters Name=group-id,Values=sg-0e82ab4bd568d58f1 \
+    --query 'SecurityGroupRules[].[IsEgress,IpProtocol,FromPort,ToPort,CidrIpv4]' \
+    --output table
+|  True |  -1  |  -1 |  -1 |  0.0.0.0/0           |
+|  False|  tcp |  80 |  80 |  0.0.0.0/0           |
+|  False|  tcp |  22 |  22 |  x.x.x.x/32   |
+# 캡처: docs/screenshots/sg-rules-masked.png (IP 가림 · 원본은 mission_docs/private-screenshots/sg-rules.png, 제출 제외)
+
+## 5. 키페어, AMI, EC2 생성
+$ mkdir -p ~/.ssh && \
+  aws ec2 create-key-pair \
+    --profile b3-1 \
+    --key-name b3-1-key \
+    --key-type ed25519 \
+    --tag-specifications 'ResourceType=key-pair,Tags=[{Key=Name,Value=b3-1-key},{Key=Project,Value=Codyssey-B3-1},{Key=Owner,Value=Yeonjin_IAM}]' \
+    --query 'KeyMaterial' \
+    --output text > ~/.ssh/b3-1-key.pem && \
+  chmod 400 ~/.ssh/b3-1-key.pem && \
+  ls -l ~/.ssh/b3-1-key.pem
+# (보고) -r-------- ... /Users/heoney/.ssh/b3-1-key.pem  (개인키 내용은 기록하지 않음)
+$ aws ec2 describe-images \
+    --profile b3-1 \
+    --owners amazon \
+    --filters 'Name=name,Values=al2023-ami-2023.*-x86_64' 'Name=state,Values=available' \
+    --query 'sort_by(Images,&CreationDate)[-1].[ImageId,Name,CreationDate]' \
+    --output table
+|  ami-0b8d35c42668c50d7                            |
+|  al2023-ami-2023.12.20261109.0-kernel-6.1-x86_64  |
+|  2026-11-04T23:29:36.000Z                         |
+$ aws ec2 run-instances \
+    --profile b3-1 \
+    --image-id ami-0b8d35c42668c50d7 \
+    --instance-type t3.micro \
+    --count 1 \
+    --key-name b3-1-key \
+    --network-interfaces 'DeviceIndex=0,SubnetId=subnet-076006b93227230ea,Groups=sg-0e82ab4bd568d58f1,AssociatePublicIpAddress=true' \
+    --block-device-mappings 'DeviceName=/dev/xvda,Ebs={VolumeSize=8,VolumeType=gp3,DeleteOnTermination=true}' \
+    --credit-specification CpuCredits=standard \
+    --tag-specifications \
+      'ResourceType=instance,Tags=[{Key=Name,Value=b3-1-web},{Key=Project,Value=Codyssey-B3-1},{Key=Owner,Value=Yeonjin_IAM}]' \
+      'ResourceType=volume,Tags=[{Key=Name,Value=b3-1-web-root},{Key=Project,Value=Codyssey-B3-1},{Key=Owner,Value=Yeonjin_IAM}]' \
+      'ResourceType=network-interface,Tags=[{Key=Name,Value=b3-1-web-eni},{Key=Project,Value=Codyssey-B3-1},{Key=Owner,Value=Yeonjin_IAM}]' \
+    --query 'Instances[0].[InstanceId,State.Name,InstanceType,PrivateIpAddress]' \
+    --output text
+i-01f7d473b859da5c4     pending t3.micro        10.0.1.14
+
+## 6. EC2 상태 조회 (트러블슈팅 사례 2 포함)
+$ aws ec2 describe-instances \
+    --profile b3-1 \
+    --instance-ids i-01f7d473b859da5c4 \
+    --query 'Reservations[0].Instances[0].{1_ID:InstanceId,2_State:State.Name,...,10_ENI:NetworkInterfaces[0].NetworkInterfaceId}' \
+    --output table
+aws: [ERROR]: An error occurred (ParamValidation): Bad value for --query ...: Expecting: ['quoted_identifier', 'unquoted_identifier'], got: number: Parse error at column 30, token "1" (NUMBER)
+# 캡처: docs/screenshots/troubleshooting-query-error.png
+$ aws ec2 describe-instances \
+    --profile b3-1 \
+    --instance-ids i-01f7d473b859da5c4 \
+    --query 'Reservations[0].Instances[0].{A_ID:InstanceId,B_State:State.Name,C_Type:InstanceType,D_AZ:Placement.AvailabilityZone,E_Subnet:SubnetId,F_SG:SecurityGroups[0].GroupName,G_PrivateIP:PrivateIpAddress,H_PublicIP:PublicIpAddress,I_Volume:BlockDeviceMappings[0].Ebs.VolumeId,J_ENI:NetworkInterfaces[0].NetworkInterfaceId}' \
+    --output table
+|  A_ID        |  i-01f7d473b859da5c4       |
+|  B_State     |  running                   |
+|  C_Type      |  t3.micro                  |
+|  D_AZ        |  ap-northeast-2a           |
+|  E_Subnet    |  subnet-076006b93227230ea  |
+|  F_SG        |  b3-1-web-sg               |
+|  G_PrivateIP |  10.0.1.14                 |
+|  H_PublicIP  |  43.202.5.32               |
+|  I_Volume    |  vol-0410f9a41807923a5     |
+|  J_ENI       |  eni-00dd9ae20825fc74c     |
+# 캡처: docs/screenshots/ec2-instance.png
+
+## 7. SSH 접속과 웹 서버
+$ ssh -i ~/.ssh/b3-1-key.pem ec2-user@43.202.5.32
+Are you sure you want to continue connecting (yes/no/[fingerprint])? yes
+Warning: Permanently added '43.202.5.32' (ED25519) to the list of known hosts.
+# (요약) Amazon Linux 2023 로고 배너 출력 후 EC2 프롬프트로 바뀜
+[ec2-user@ip-10-0-1-14 ~]$
+# 캡처: docs/screenshots/ssh-connected.png
+[ec2-user@ip-10-0-1-14 ~]$ curl -sI https://example.com | head -1
+# (보고) HTTP/2 200
+[ec2-user@ip-10-0-1-14 ~]$ sudo dnf install -y nginx
+# (보고) 설치 목록 출력 후 마지막 줄 Complete!
+[ec2-user@ip-10-0-1-14 ~]$ sudo systemctl enable --now nginx
+[ec2-user@ip-10-0-1-14 ~]$ systemctl is-active nginx
+# (보고) active
+[ec2-user@ip-10-0-1-14 ~]$ echo "== 1. nginx 상태 ==" && systemctl is-active nginx && \
+echo "== 2. curl http://localhost ==" && curl -sI http://localhost | head -1 && \
+echo "== 3. curl https://example.com (아웃바운드) ==" && curl -sI https://example.com | head -1
+== 1. nginx 상태 ==
+active
+== 2. curl http://localhost ==
+HTTP/1.1 200 OK
+== 3. curl https://example.com (아웃바운드) ==
+HTTP/2 200
+# 캡처: docs/screenshots/server-local-check.png
+
+## 8. 외부 접속 (방식 A)
+# 브라우저 주소창에 http://43.202.5.32 입력 → "Welcome to nginx!" 페이지 표시 (주소창: 주의 요함 43.202.5.32)
+# 캡처: docs/screenshots/external-access.png
+
+## 9. 네트워크 구성 최종 조회
+$ aws ec2 describe-vpcs --profile b3-1 --vpc-ids vpc-0d4141c709a455f42 \
+    --query 'Vpcs[].[VpcId,CidrBlock,State]' --output table
+|  vpc-0d4141c709a455f42 |  10.0.0.0/16  |  available |
+$ aws ec2 describe-subnets --profile b3-1 --subnet-ids subnet-076006b93227230ea \
+    --query 'Subnets[].[SubnetId,CidrBlock,AvailabilityZone,State]' --output table
+|  subnet-076006b93227230ea |  10.0.1.0/24  |  ap-northeast-2a  |  available |
+$ aws ec2 describe-internet-gateways --profile b3-1 --internet-gateway-ids igw-011ba32fd601177ce \
+    --query 'InternetGateways[].Attachments[].[VpcId,State]' --output table
+|  vpc-0d4141c709a455f42 |  available   |
+$ aws ec2 describe-route-tables --profile b3-1 --route-table-ids rtb-02b21534c3d314f1e \
+    --query 'RouteTables[].Routes[].[DestinationCidrBlock,GatewayId,State]' --output table
+|  10.0.0.0/16 |  local                   |  active |
+|  0.0.0.0/0   |  igw-011ba32fd601177ce   |  active |
+$ aws ec2 describe-route-tables --profile b3-1 --route-table-ids rtb-02b21534c3d314f1e \
+    --query 'RouteTables[].Associations[].[SubnetId,AssociationState.State]' --output table
+|  subnet-076006b93227230ea |  associated  |
+# 캡처: docs/screenshots/network-config1.png, docs/screenshots/network-config2.png
+
+## 10. 정리 전 리소스 목록 (태그 기준)
+$ aws ec2 describe-tags --profile b3-1 \
+    --filters Name=key,Values=Project Name=value,Values=Codyssey-B3-1 \
+    --query 'Tags[].[ResourceType,ResourceId]' --output table
+|  key-pair           |  key-0ae9f2c0bdd284a0e      |
+|  volume             |  vol-0410f9a41807923a5      |
+|  security-group     |  sg-0e82ab4bd568d58f1       |
+|  internet-gateway   |  igw-011ba32fd601177ce      |
+|  network-interface  |  eni-00dd9ae20825fc74c      |
+|  vpc                |  vpc-0d4141c709a455f42      |
+|  subnet             |  subnet-076006b93227230ea   |
+|  route-table        |  rtb-02b21534c3d314f1e      |
+|  instance           |  i-01f7d473b859da5c4        |
+$ aws ec2 describe-volumes --profile b3-1 --volume-ids vol-0410f9a41807923a5 \
+    --query 'Volumes[].[VolumeId,Size,VolumeType,State,Attachments[0].DeleteOnTermination]' --output table
+|  vol-0410f9a41807923a5 |  8 |  gp3 |  in-use |  True |
+# 캡처: docs/screenshots/resources-before-cleanup.png
+
+## 11. Nginx 대기 포트와 접속 로그 (브라우저 새로고침 직후)
+[ec2-user@ip-10-0-1-14 ~]$ echo "== 1. 80번 포트에서 대기 중인 프로세스 ==" && sudo ss -tlnp | grep ':80 ' && \
+echo "== 2. Nginx 접속 로그 최근 5줄 (접속자 IP 가림) ==" && \
+sudo tail -n 5 /var/log/nginx/access.log | sed -E 's/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/x.x.x.x/'
+== 1. 80번 포트에서 대기 중인 프로세스 ==
+LISTEN 0      511          0.0.0.0:80        0.0.0.0:*    users:(("nginx",pid=25890,fd=8),("nginx",pid=25889,fd=8),("nginx",pid=25888,fd=8))
+LISTEN 0      511             [::]:80           [::]:*    users:(("nginx",pid=25890,fd=9),("nginx",pid=25889,fd=9),("nginx",pid=25888,fd=9))
+== 2. Nginx 접속 로그 최근 5줄 (접속자 IP 가림) ==
+x.x.x.x - - [10/Nov/2026:06:25:50 +0000] "GET / HTTP/1.1" 200 896 "-" "grok-fp/1.0 (authorized research)" "-"
+# (요약) x.x.x.x - - [10/Nov/2026:06:41:18 +0000] "\x16\x03\x01…(TLS 접속 시도 바이트)…" 400 157 "-" "-" "-"
+# (요약) x.x.x.x - - [10/Nov/2026:06:41:18 +0000] "\x16\x03\x01…(TLS 접속 시도 바이트)…" 400 157 "-" "-" "-"
+x.x.x.x - - [10/Nov/2026:07:11:23 +0000] "GET / HTTP/1.1" 304 0 "-" "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36" "-"
+x.x.x.x - - [10/Nov/2026:07:11:24 +0000] "GET / HTTP/1.1" 304 0 "-" "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36" "-"
+# 해석: 07:11 UTC(16:11 KST) 두 줄이 내 Mac 브라우저 새로고침(304 = 캐시 확인 응답). 06:25의 grok-fp, 06:41의 TLS 바이트(400)는 외부 자동 스캐너.
+# 캡처: docs/screenshots/nginx-access-log.png
+
+## 12. 리소스 정리
+$ aws ec2 terminate-instances --profile b3-1 \
+    --instance-ids i-01f7d473b859da5c4 \
+    --query 'TerminatingInstances[].[InstanceId,PreviousState.Name,CurrentState.Name]' \
+    --output table
+|  i-01f7d473b859da5c4 |  running |  shutting-down  |
+$ aws ec2 wait instance-terminated --profile b3-1 --instance-ids i-01f7d473b859da5c4 && echo "종료 완료"
+종료 완료
+$ aws ec2 delete-key-pair --profile b3-1 --key-name b3-1-key
+{
+    "Return": true,
+    "KeyPairId": "key-0ae9f2c0bdd284a0e"
+}
+$ aws ec2 delete-security-group --profile b3-1 --group-id sg-0e82ab4bd568d58f1
+{
+    "Return": true,
+    "GroupId": "sg-0e82ab4bd568d58f1"
+}
+$ aws ec2 disassociate-route-table --profile b3-1 --association-id rtbassoc-0fa8d7b66366482b8
+# (보고) 출력 없음 = 성공
+$ aws ec2 delete-route-table --profile b3-1 --route-table-id rtb-02b21534c3d314f1e
+# (보고) 출력 없음 = 성공
+$ aws ec2 detach-internet-gateway --profile b3-1 \
+    --internet-gateway-id igw-011ba32fd601177ce \
+    --vpc-id vpc-0d4141c709a455f42
+# (보고) 출력 없음 = 성공
+$ aws ec2 delete-internet-gateway --profile b3-1 --internet-gateway-id igw-011ba32fd601177ce
+# (보고) 출력 없음 = 성공
+$ aws ec2 delete-subnet --profile b3-1 --subnet-id subnet-076006b93227230ea
+# (보고) 출력 없음 = 성공
+$ aws ec2 delete-vpc --profile b3-1 --vpc-id vpc-0d4141c709a455f42
+# (보고) 출력 없음 = 성공
+
+## 13. 정리 후 남은 리소스 확인 (태그 기준 개수)
+$ P='Name=tag:Project,Values=Codyssey-B3-1'
+$ aws ec2 describe-instances --profile b3-1 --filters $P --query 'Reservations[].Instances[].[InstanceId,State.Name]' --output text
+i-01f7d473b859da5c4     terminated
+$ aws ec2 describe-volumes --profile b3-1 --filters $P --query 'length(Volumes)' --output text
+0
+$ aws ec2 describe-addresses --profile b3-1 --query 'length(Addresses)' --output text
+0
+$ aws ec2 describe-network-interfaces --profile b3-1 --filters $P --query 'length(NetworkInterfaces)' --output text
+0
+$ aws ec2 describe-key-pairs --profile b3-1 --filters $P --query 'length(KeyPairs)' --output text
+0
+$ aws ec2 describe-security-groups --profile b3-1 --filters $P --query 'length(SecurityGroups)' --output text
+0
+$ aws ec2 describe-route-tables --profile b3-1 --filters $P --query 'length(RouteTables)' --output text
+0
+$ aws ec2 describe-internet-gateways --profile b3-1 --filters $P --query 'length(InternetGateways)' --output text
+0
+$ aws ec2 describe-subnets --profile b3-1 --filters $P --query 'length(Subnets)' --output text
+0
+$ aws ec2 describe-vpcs --profile b3-1 --filters $P --query 'length(Vpcs)' --output text
+0
+# 실제로는 위 명령들을 echo 머리말과 &&로 이어 한 번에 실행했다. 캡처: docs/screenshots/cleanup-result.png
+# 정리 후 브라우저 http://43.202.5.32 → "사이트에 연결할 수 없음" ERR_CONNECTION_TIMED_OUT. 캡처: docs/screenshots/after-cleanup-access.png
+$ rm ~/.ssh/b3-1-key.pem
+# (확인) ls -l ~/.ssh/b3-1-key.pem → No such file or directory
+$ ssh-keygen -R 43.202.5.32
+# Host 43.202.5.32 found: line 2
+# Host 43.202.5.32 found: line 3
+/Users/heoney/.ssh/known_hosts updated.
+Original contents retained as /Users/heoney/.ssh/known_hosts.old
